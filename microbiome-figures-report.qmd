@@ -1,0 +1,735 @@
+---
+title: "Hairy-nosed wombat 16s mircobiome figures and stats"
+author: Colin Sobek
+format:
+  html:
+    self-contained: true
+  docx: default
+execute:
+  warning: false
+  message: false
+editor_options: 
+  chunk_output_type: console
+---
+```{r}
+#| echo: false
+#| label: data prep
+
+library(tidyverse)
+library(readxl)
+library(ggtext)
+library(forcats)
+library(RColorBrewer)
+library(patchwork)
+library(ggdist)
+
+reserve <- read_tsv("import_docs/NHNW-SHNW-reserve-weighted_unifrac_PERMANOVA.tsv") %>%
+  rename_all(tolower) %>%
+  select(-...1) %>%
+  mutate(group1 = factor(group1, levels = c("EFNP","RUNR","Brookfield conservation park", "Kooloola station", "Wonga station" )))
+
+species <- read_tsv("import_docs/NHNW-SHNW-Species-weighted_unifrac_PERMANOVA.tsv") %>%
+  rename_all(tolower) %>%
+  select(-...1)
+
+season <- read_tsv("import_docs/NHNW-SHNW-season-weighted_unifrac_PERMANOVA.tsv") %>%
+  rename_all(tolower) %>%
+  select(-...1)
+
+observed_otu <- read_tsv("import_docs/observed_otus.tsv") %>%
+  rename_all(tolower) %>%
+  select(-category) %>%
+  mutate(reserve = factor(reserve, levels = c("EFNP","RUNR","Brookfield conservation park", "Kooloola station", "Wonga station")))
+
+shannon_div <- read_tsv("import_docs/shannon_div.tsv") %>%
+  rename_all(tolower) %>%
+  select(-category) %>%
+  mutate(reserve = factor(reserve, levels = c("EFNP","RUNR","Brookfield conservation park", "Kooloola station", "Wonga station")))
+
+faith_pd <- read_tsv("import_docs/faith_pd.tsv") %>%
+  rename_all(tolower) %>%
+  select(-category) %>%
+  mutate(reserve = factor(reserve, levels = c("EFNP","RUNR","Brookfield conservation park", "Kooloola station", "Wonga station")))
+
+#############################################################
+
+metadata <- read_tsv("import_docs/metadata.txt")
+
+otu_pairwise_reserve <- read_csv("import_docs/obs-otu-kruskal-wallis-pairwise-reserve.csv")
+
+shannon_pairwise_reserve <- read_csv("import_docs/shannon-kruskal-wallis-pairwise-reserve.csv")
+
+faith_pd_pairwise_reserve <- read_csv("import_docs/faith-pd-kruskal-wallis-pairwise-reserve.csv")
+
+otu_counts <- read_excel("import_docs/otu-table-no-outliers.xlsx") %>%
+  pivot_longer(-sample_id, names_to = "otu", values_to = "count")
+
+core_otu_NHNW_SHNW <-read_tsv("import_docs/core_features_95.tsv") %>%
+  select(-q1,-median,-q2) %>%
+  inner_join(., taxonomy, by='otu') %>%
+  inner_join(., otu_counts, by='otu') %>%
+  inner_join(., metadata, by='sample_id') %>%
+  select(-name,-cluster,-category,-count)
+
+write_csv(core_otu_NHNW_SHNW, "~/Library/CloudStorage/Box-Box/ColinSobek/13_Microbiome/10_R_code/core_otu.csv")
+
+taxonomy <- read_tsv("import_docs/NHNW-SHNW-16s-taxonomy.tsv") %>%
+  rename_all(tolower) %>%
+  separate(taxonomy,into=c("kingdom", "phylum", "class", "order", "family", "genus", "species"),
+           sep = ";") %>%
+  mutate(across(everything(), ~replace_na(.x,"unclassified"))) %>%
+  select(-confidence)
+
+otu_rel_abund <- inner_join(metadata, otu_counts, by= "sample_id") %>%
+  inner_join(., taxonomy, by="otu") %>%
+  group_by(sample_id) %>%
+  mutate(rel_abund = count / sum(count)) %>%
+  ungroup() %>%
+  rename(., "wombat_species" = "Species") %>%
+  pivot_longer(cols = c("kingdom", "phylum", "class", "order", "family", "genus", "species", "otu"),
+               names_to = "level",
+               values_to = "taxon")
+
+taxon_rel_abund_spp <- otu_rel_abund %>%
+  filter(level == "phylum") %>% ## can cahnge the filter level for data exploration
+  group_by(wombat_species, sample_id, taxon) %>%
+  summarise(rel_abund = sum(rel_abund), .groups = "drop") %>%
+  group_by(wombat_species, taxon) %>%
+  summarise(mean_rel_abund = 100*mean(rel_abund), .groups = "drop")
+
+taxon_pool_spp <- taxon_rel_abund_spp %>% # visulaise the relative abundancce of the taxa, can change by replaccing phylum above
+  group_by(taxon) %>%
+  summarise(pool = max(mean_rel_abund) < 2,
+            mean = mean(mean_rel_abund),
+            .groups = "drop") # pool the relative abundances < 2%
+
+taxon_joined_spp <- inner_join(taxon_rel_abund_spp, taxon_pool_spp, by="taxon") %>% # pooling the rare phyla may need to play with this to get account for rare groups
+  mutate(taxon = if_else(pool, "Other", taxon)) %>%
+  group_by(wombat_species, taxon) %>%
+  summarise(mean_rel_abund = sum(mean_rel_abund),
+            mean = min(mean),
+            .groups = "drop") %>%
+  mutate(taxon = factor(taxon),
+         taxon = fct_reorder(taxon, mean, .desc =TRUE))
+###############################################################
+taxon_rel_abund_reserve <- otu_rel_abund %>%
+  filter(level == "phylum") %>% 
+  group_by(reserve, sample_id, taxon) %>%
+  summarise(rel_abund = sum(rel_abund), .groups = "drop") %>%
+  group_by(reserve, taxon) %>%
+  summarise(mean_rel_abund = 100*mean(rel_abund), .groups = "drop")
+
+taxon_pool_reserve <- taxon_rel_abund_reserve %>% 
+  group_by(taxon) %>%
+  summarise(pool = max(mean_rel_abund) < 2,
+            mean = mean(mean_rel_abund),
+            .groups = "drop") 
+
+taxon_joined_reserve <- inner_join(taxon_rel_abund_reserve, taxon_pool_reserve, by="taxon") %>% 
+  mutate(taxon = if_else(pool, "Other", taxon)) %>%
+  group_by(reserve, taxon) %>%
+  summarise(mean_rel_abund = sum(mean_rel_abund),
+            mean = min(mean),
+            .groups = "drop") %>%
+  mutate(taxon = factor(taxon),
+         taxon = fct_reorder(taxon, mean, .desc =TRUE))
+##########################################################
+taxon_rel_abund_season <- otu_rel_abund %>%
+  filter(level == "phylum") %>% 
+  group_by(season, sample_id, taxon) %>%
+  summarise(rel_abund = sum(rel_abund), .groups = "drop") %>%
+  group_by(season, taxon) %>%
+  summarise(mean_rel_abund = 100*mean(rel_abund), .groups = "drop")
+
+taxon_pool_season <- taxon_rel_abund_season %>% 
+  group_by(taxon) %>%
+  summarise(pool = max(mean_rel_abund) < 2,
+            mean = mean(mean_rel_abund),
+            .groups = "drop") 
+
+taxon_joined_season <- inner_join(taxon_rel_abund_season, taxon_pool_season, by="taxon") %>% 
+  mutate(taxon = if_else(pool, "Other", taxon)) %>%
+  group_by(season, taxon) %>%
+  summarise(mean_rel_abund = sum(mean_rel_abund),
+            mean = min(mean),
+            .groups = "drop") %>%
+  mutate(taxon = factor(taxon),
+         taxon = fct_reorder(taxon, mean, .desc =TRUE))
+#########################################################
+taxon_fam_rel_abund_spp <- otu_rel_abund %>%
+  filter(level == "family") %>% 
+  group_by(wombat_species, sample_id, taxon) %>%
+  summarise(rel_abund = sum(rel_abund), .groups = "drop") %>%
+  group_by(wombat_species, taxon) %>%
+  summarise(mean_rel_abund = 100*mean(rel_abund), .groups = "drop")
+
+taxon_fam_pool_spp <- taxon_fam_rel_abund_spp %>% 
+  group_by(taxon) %>%
+  summarise(pool = max(mean_rel_abund) < 2,
+            mean = mean(mean_rel_abund),
+            .groups = "drop") 
+
+taxon_fam_joined_spp <- inner_join(taxon_fam_rel_abund_spp, taxon_fam_pool_spp, by="taxon") %>% 
+  mutate(taxon = if_else(pool, "Other", taxon)) %>%
+  group_by(wombat_species, taxon) %>%
+  summarise(mean_rel_abund = sum(mean_rel_abund),
+            mean = min(mean),
+            .groups = "drop") %>%
+  mutate(taxon = factor(taxon),
+         taxon = fct_reorder(taxon, mean, .desc =TRUE))
+##########################################################
+taxon_fam_rel_abund_res <- otu_rel_abund %>%
+  filter(level == "family") %>% 
+  group_by(reserve, sample_id, taxon) %>%
+  summarise(rel_abund = sum(rel_abund), .groups = "drop") %>%
+  group_by(reserve, taxon) %>%
+  summarise(mean_rel_abund = 100*mean(rel_abund), .groups = "drop")
+
+taxon_fam_pool_res <- taxon_fam_rel_abund_res %>% 
+  group_by(taxon) %>%
+  summarise(pool = max(mean_rel_abund) < 2,
+            mean = mean(mean_rel_abund),
+            .groups = "drop") 
+
+taxon_fam_joined_res <- inner_join(taxon_fam_rel_abund_res, taxon_fam_pool_res, by="taxon") %>% 
+  mutate(taxon = if_else(pool, "Other", taxon)) %>%
+  group_by(reserve, taxon) %>%
+  summarise(mean_rel_abund = sum(mean_rel_abund),
+            mean = min(mean),
+            .groups = "drop") %>%
+  mutate(taxon = factor(taxon),
+         taxon = fct_reorder(taxon, mean, .desc =TRUE))
+############################################################
+taxon_fam_rel_abund_sea <- otu_rel_abund %>%
+  filter(level == "family") %>% 
+  group_by(season, sample_id, taxon) %>%
+  summarise(rel_abund = sum(rel_abund), .groups = "drop") %>%
+  group_by(season, taxon) %>%
+  summarise(mean_rel_abund = 100*mean(rel_abund), .groups = "drop")
+
+taxon_fam_pool_sea <- taxon_fam_rel_abund_sea %>% 
+  group_by(taxon) %>%
+  summarise(pool = max(mean_rel_abund) < 2,
+            mean = mean(mean_rel_abund),
+            .groups = "drop") 
+
+taxon_fam_joined_sea <- inner_join(taxon_fam_rel_abund_sea, taxon_fam_pool_sea, by="taxon") %>% 
+  mutate(taxon = if_else(pool, "Other", taxon)) %>%
+  group_by(season, taxon) %>%
+  summarise(mean_rel_abund = sum(mean_rel_abund),
+            mean = min(mean),
+            .groups = "drop") %>%
+  mutate(taxon = factor(taxon),
+         taxon = fct_reorder(taxon, mean, .desc =TRUE))
+
+#################################################################
+
+
+```
+
+Figure 3 - Box plots comparing the weighted unifrac distance between species, season and reserve.
+
+Between species P value 0.001
+
+Between reserves all P values 0.001
+
+Between seasons all P values 0.001
+```{r}
+#| layout-ncol: 1
+#| column: page
+#| fig-cap: Weighted unifrac distance
+#| label: w-unifrac
+#| echo: false
+
+species_unifrac <- species %>%
+ggplot(aes(group1, distance, fill = group1)) +
+  geom_violin() +
+  stat_summary(fun = median, geom = 'crossbar') +
+  scale_fill_manual(name = "Wombat species",
+                    labels =c("*Lasiorhinus<br>krefftii*", "*Lasiorhinus<br>latifrons*"),
+                    values = c("#9970ab","#5aae61")) +
+  labs( x = "Wombat species",
+        y = "Weighted unifrac distance") +
+  scale_x_discrete(labels=c("*Lasiorhinus<br>krefftii*", "*Lasiorhinus<br>latifrons*")) +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_markdown())
+
+reserve_unifrac <- reserve %>%
+ggplot(aes(group1, distance, fill = group1)) +
+  geom_violin() +
+  stat_summary(fun = median, geom = 'crossbar') +
+  scale_fill_manual(name = "Reserve",
+                    values = c("#9970ab","#9970ab","#5aae61","#5aae61","#5aae61")) +
+  labs( x ="Reserve",
+        y = "Weighted unifrac distance") +
+  scale_x_discrete(name = "Reserve",
+                   labels = c("EFNP","RUNR",
+                               "Brookfield<br>conservation<br>park", 
+                               "Kooloola<br>station",
+                               "Wonga<br>station")) +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_markdown(),
+        legend.position = "none")
+
+season_unifrac <- season %>% 
+  ggplot(aes(group1, distance, fill = group1)) +
+  geom_violin() +
+  stat_summary(fun = median, geom = 'crossbar') +
+  scale_fill_manual(name = "Season",
+                    labels = c("EFNP<br>spring",
+                               "EFNP<br>winter",
+                               "RUNR<br>winter",
+                               "SHNW"),
+                    values = c("#9970ab","#9970ab","#9970ab")) +
+  scale_x_discrete(name = "Season",
+                    labels = c("EFNP<br>spring",
+                               "EFNP<br>winter",
+                               "RUNR<br>winter")) +
+  labs(x = NULL,
+       y = "Weighted unifrac distance") +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_markdown(),
+        legend.position = "none")
+
+season_unifrac + species_unifrac + reserve_unifrac +
+  plot_layout(guides = 'collect') +
+  plot_annotation(tag_levels = 'A')
+```
+
+Figure 2 - Box plots comparing comparing the alpha diversity between species, reserve and season. The metrics that were compared were observed features (otu's), shannons entropy and faiths phylogenetic diversity. 
+
+Observed features calculates the observed features seingles and doubles.  
+
+Between species P value from a Kruskal-Wallis test was 1.352311e-12
+
+Between reserve P value shown in table.
+
+Between season not calculated in Qiime need to troubleshoot. 
+```{r}
+#| layout-ncol: 1
+#| column: page
+#| fig-cap: Observed features (otu's)
+#| label: observed features
+#| echo: false
+
+observed_otu %>%
+ggplot(aes(species, observed_features,  fill = species)) +
+  geom_boxplot() +
+  scale_fill_manual(name = "Wombat species",
+                    labels =c("*Lasiorhinus<br>krefftii*", "*Lasiorhinus<br>latifrons*"),
+                    values = c("#9970ab","#5aae61")) +
+  labs( x = "Wombat species",
+        y = "Observed otu's") +
+  scale_x_discrete(labels=c("*Lasiorhinus<br>krefftii*", "*Lasiorhinus<br>latifrons*")) +
+  labs( x = NULL,
+        y = "Observed features") +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_markdown())
+
+observed_otu %>%
+ggplot(aes(reserve, observed_features, fill = reserve)) +
+  geom_boxplot() +
+  scale_fill_manual(name = "Reserve",
+                    labels = c("EFNP","RUNR",
+                               "Brookfield<br>conservation<br>park", 
+                               "Kooloola<br>station",
+                               "Wonga<br>station"),
+                    values = c("#8c510a","#bf812d","#80cdc1","#35978f","#01665e")) +
+  scale_x_discrete(name = "Reserve",
+                   labels = c("EFNP","RUNR",
+                               "Brookfield<br>conservation<br>park", 
+                               "Kooloola<br>station",
+                               "Wonga<br>station")) +
+  labs(x = NULL,
+       y = "Observed features") +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_markdown())
+
+observed_otu |> filter(!is.na(season)) |>
+ggplot(aes(season, observed_features, fill = season)) +
+  geom_boxplot()+
+  scale_fill_manual(name = "Season",
+                    labels = c("EFNP<br>spring",
+                               "EFNP<br>winter",
+                               "RUNR<br>winter",
+                               "SHNW"),
+                    values = c("#dfc27d","#f6e8c3","#bf812d")) +
+  scale_x_discrete(name = "Season",
+                    labels = c("EFNP<br>spring",
+                               "EFNP<br>winter",
+                               "RUNR<br>winter")) +
+  labs(x = NULL,
+       y = "Observed features") +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_markdown())
+
+print(otu_pairwise_reserve)
+```
+
+Box plots comparing shannon's index between species, season and reserve (Figure 2).
+
+Shannon's index calculates richness and diversity using a natural log. Accounts for both the abundance and eveness of taxa present.
+
+Between species P value 6.022781e-18
+
+Between reserve P value in table.
+
+
+```{r}
+#| layout-ncol: 1
+#| column: page
+#| fig-cap: Shannon index
+#| label: shannon diversity
+#| echo: false
+
+shannnon_species <- ggplot(shannon_div, aes(species, shannon_entropy,  fill = species)) +
+  geom_violin() +
+  stat_summary(fun = median, geom = 'crossbar') +
+  scale_fill_manual(name = "Wombat species",
+                    labels =c("*Lasiorhinus<br>krefftii*", "*Lasiorhinus<br>latifrons*"),
+                    values = c("#9970ab","#5aae61")) +
+  labs( x = "Wombat species",
+        y = "Shannon entropy") +
+  scale_x_discrete(labels=c("*Lasiorhinus<br>krefftii*", "*Lasiorhinus<br>latifrons*")) +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_markdown())
+
+shannon_reserve <- ggplot(shannon_div, aes(reserve, shannon_entropy, fill = reserve)) +
+  geom_violin() +
+  stat_summary(fun = median, geom = 'crossbar') +
+  scale_fill_manual(name = "Reserve",
+                    labels = c("EFNP","RUNR",
+                               "Brookfield<br>conservation<br>park", 
+                               "Kooloola<br>station",
+                               "Wonga<br>station"),
+                    values = c("#9970ab","#9970ab","#5aae61","#5aae61","#5aae61")) +
+  scale_x_discrete(name = "Reserve",
+                   labels = c("EFNP","RUNR",
+                               "Brookfield<br>conservation<br>park", 
+                               "Kooloola<br>station",
+                               "Wonga<br>station")) +
+  labs(x = NULL,
+       y = "Shannon entropy") +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_markdown(),
+        legend.position = 'none')
+
+shannon_season <- shannon_div |> filter(!is.na(season)) |> 
+  ggplot(aes(season, shannon_entropy, fill = season)) +
+  geom_violin()+
+  stat_summary(fun = median, geom = 'crossbar') +
+  scale_fill_manual(name = "Season",
+                    labels = c("EFNP<br>spring",
+                               "EFNP<br>winter",
+                               "RUNR<br>winter"),
+                    values = c("#9970ab","#9970ab","#9970ab")) +
+  scale_x_discrete(name = "Season",
+                    labels = c("EFNP<br>spring",
+                               "EFNP<br>winter",
+                               "RUNR<br>winter")) +
+  labs(x = NULL,
+       y = "Shannon entropy") +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_markdown(),
+        legend.position = 'none')
+
+shannon_season + shannnon_species + shannon_reserve +
+    plot_layout(guides = 'collect') +
+  plot_annotation(tag_levels = 'A')
+
+print(shannon_pairwise_reserve)
+
+```
+
+Box plots comparing Faiths phylogenetic diversity between wombat species, season and reserve.(Figure 2)
+
+Faith's pd measures the diversity by incorporating the phylogenetic difference between taxa.
+AKA the sum of the branch lengths. 
+Explains why many of the comparisons are non significant. 
+
+Faiths pd between species P 0.613938 not significant
+
+Faiths pd between reserve in table below EFNR to RUNR significant 
+
+Faiths pd between season spring to winter significant, wintter to winter not-sig. 
+```{r}
+#| layout-ncol: 1
+#| column: page
+#| fig-cap: Faith's pd
+#| label: faith's pd
+#| echo: false
+
+faith_species <- ggplot(faith_pd, aes(species, faith_pd,  fill = species)) +
+  geom_violin() +
+  stat_summary(fun = median, geom = 'crossbar') +
+  scale_fill_manual(name = "Wombat species",
+                    labels =c("*Lasiorhinus<br>krefftii*", "*Lasiorhinus<br>latifrons*"),
+                    values = c("#9970ab","#5aae61")) +
+  labs( x = "Wombat species",
+        y = "Faith's pd") +
+  scale_x_discrete(labels=c("*Lasiorhinus<br>krefftii*", "*Lasiorhinus<br>latifrons*")) +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_markdown())
+
+faith_reserve <- faith_pd %>%
+ggplot(aes(reserve, faith_pd, fill = reserve)) +
+  geom_violin() +
+  stat_summary(fun = median, geom = 'crossbar') +
+  scale_fill_manual(name = "Reserve",
+                    labels = c("EFNP","RUNR",
+                               "Brookfield<br>conservation<br>park", 
+                               "Kooloola<br>station",
+                               "Wonga<br>station"),
+                    values = c("#9970ab","#9970ab","#5aae61","#5aae61","#5aae61")) +
+  scale_x_discrete(name = "Reserve",
+                   labels = c("EFNP","RUNR",
+                               "Brookfield<br>conservation<br>park", 
+                               "Kooloola<br>station",
+                               "Wonga<br>station")) +
+  labs(x = NULL,
+       y = "Faith's pd") +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_markdown(),
+        legend.position = 'none')
+
+faith_season <- faith_pd |> filter(!is.na(season)) |>
+ggplot(aes(season, faith_pd, fill = season)) +
+  geom_violin()+
+  stat_summary(fun = median, geom = 'crossbar') +
+  scale_fill_manual(name = "Season",
+                    labels = c("EFNP<br>spring",
+                               "EFNP<br>winter",
+                               "RUNR<br>winter",
+                               "SHNW"),
+                    values = c("#9970ab","#9970ab","#5aae61","#5aae61")) +
+  scale_x_discrete(name = "Season",
+                    labels = c("EFNP<br>spring",
+                               "EFNP<br>winer",
+                               "RUNR<br>winter",
+                               "SHNW")) +
+  labs(x = NULL,
+       y = "Faith's pd") +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_markdown(),
+        legend.position = 'none')
+
+faith_season + faith_species + faith_reserve +
+  plot_layout(guides = 'collect') +
+  plot_annotation(tag_levels = 'A')
+
+print(faith_pd_pairwise_reserve)
+
+```
+
+Figure 4 - The taxonomic profiles for each wombat species showing the most abundant bacterial phylum and family. The category "other" represents taxa that were under 2% abundance and combined. Taxonomic assignments were made using a naive bayesian classifier and the SILVA database.
+
+
+```{r}
+#| layout-ncol: 1
+#| column: page
+#| fig-cap: Most abundant bacterial families in each wombat species
+#| label: bacterial mean realative abundance in each species
+#| echo: false
+
+taxon_fam_joined_spp %>% 
+ggplot(aes(x=wombat_species, y=mean_rel_abund, fill = taxon)) +
+  geom_col() + 
+  scale_fill_manual(name = "Bacterial family",
+                    values = c("#a50026","#f46d43","#fee090","#e0f3f8","#74add1",
+                               "#313695","#d73027","#fdae61","#ffffbf","#abd9e9",
+                               "#4575b4","#67001f","#d6604d","#fddbc7","#d1e5f0",
+                               "#4393c3","#053061","#b2182b","#f4a582","grey")) +
+  scale_x_discrete(labels=c("*Lasiorhinus<br>krefftii*", "*Lasiorhinus<br>latifrons*"),
+                   expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0)) +
+  labs( x = NULL,
+        y = "Mean Relative Abundance (%)") +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_text(face = "italic"),
+        legend.key.size = unit(10, "pt")) +
+  guides(fill = guide_legend(ncol = 1))
+```
+
+```{r}
+#| layout-ncol: 1
+#| column: page
+#| fig-cap: Most abundant bacterial families in each reserve
+#| label: bacterial mean realative abundance in each reserve
+#| echo: false
+
+taxon_fam_joined_res %>%
+ mutate(reserve = factor(reserve, levels = c("EFNP","RUNR","Brookfield conservation park", "Kooloola station", "Wonga station"))) %>%
+ggplot(aes(x=reserve, y=mean_rel_abund, fill = taxon)) +
+  geom_col() + 
+  scale_fill_manual(name = "Bacterial family",
+                    values = c("#a50026","#f46d43","#fee090","#e0f3f8","#74add1",
+                               "#313695","#d73027","#fdae61","#ffffbf","#abd9e9",
+                               "#4575b4","#67001f","#d6604d","#fddbc7","#d1e5f0",
+                               "#4393c3","#053061","#b2182b","#f4a582","#92c5de",
+                               "#2166ac", "grey")) +
+  scale_x_discrete(labels=c("EFNP","RUNR","Brookfield<br>conservation<br>park", "Kooloola<br>station", "Wonga<br>station" ),
+                   expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0)) +
+  labs( x = NULL,
+        y = "Mean Relative Abundance (%)") +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_text(face = "italic"),
+        legend.key.size = unit(10, "pt"),
+        legend) + 
+  guides(fill = guide_legend(ncol = 1))
+```
+
+```{r}
+#| layout-ncol: 1
+#| column: page
+#| fig-cap: Most abundant bacterial families in each season
+#| label: bacterial mean realative abundance in each season
+#| echo: false
+
+taxon_fam_joined_sea %>%
+  filter(!is.na(season)) %>%
+ggplot(aes(x=season, y=mean_rel_abund, fill = taxon)) +
+  geom_col() + 
+  scale_fill_manual(name = "Bacterial family",
+                    values = c("#a50026","#f46d43","#fee090","#e0f3f8","#74add1",
+                               "#313695","#d73027","#fdae61","#ffffbf","#abd9e9",
+                               "#4575b4","#67001f","#d6604d","#fddbc7","#d1e5f0",
+                               "#4393c3","#053061","#b2182b","#f4a582","#92c5de",
+                               "#2166ac", "grey")) +
+  scale_x_discrete(labels = c("EFNP<br>spring",
+                               "EFNP<br>winter",
+                               "RUNR<br>winter"),
+                   expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0)) +
+  labs( x = NULL,
+        y = "Mean Relative Abundance (%)") +
+  theme_classic() +
+  theme(axis.text.x = element_markdown(),
+        legend.text = element_text(face = "italic"),
+        legend.key.size = unit(10, "pt")) +
+  guides(fill = guide_legend(ncol = 1))
+
+```
+
+Cleavland dot plot of rel abund season update the colors to be consistent with species ie
+all NHNW associated categories as purple.
+
+```{r}
+#| layout-ncol: 1
+#| column: page
+#| fig-cap: Relative abundance of bacterial families in each species, season and reserve
+#| label: bacterial family mean realative abundance in each sspecies, season and reserve
+#| echo: false
+
+f_tax_spp <- taxon_fam_joined_spp %>%
+  mutate(taxon = factor(taxon, levels = c("unclassified","Other","Anaerovoracaceae",
+                                          "Christensenellaceae","Clostridia_UCG-014",
+                                          "Erysipelatoclostridiaceae","Hungateiclostridiaceae",
+                                          "Izemoplasmataceae","Lachnospiraceae",
+                                          "Oscillospiraceae","Peptostreptococcaceae",
+                                    "Prevotellaceae","RF39","Rikenellaceae","Ruminococcaceae",
+                                          "Spirochaetaceae","UCG-010","WCHB1-41",
+                                    "[Eubacterium]_coprostanoligenes_group","p-251-o5"))) %>%
+  ggplot(aes(x=mean_rel_abund, y = taxon, colour = wombat_species)) +
+  geom_hline(yintercept = 1:22,
+             linewidth = 0.25,
+             color = "black") +
+  geom_point(size =4) +
+  labs(x = "Mean relative abundance",
+       y = "Bacterial family") +
+  scale_color_manual(values = c("#9970ab","#5aae61"),
+                     name = "Wombat species",
+                     labels = c("*Lasiorhinus<br>krefftii*", "*Lasiorhinus<br>latifrons*")) +
+  theme(axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        legend.text = element_markdown(),
+        axis.title.y = element_blank())
+
+f_tax_res <- taxon_fam_joined_res %>%
+ mutate(taxon = factor(taxon, levels = c("unclassified","Other","Anaerovoracaceae",
+                                         "Christensenellaceae","Clostridia_UCG-014",
+                                         "Erysipelatoclostridiaceae",
+                                         "Hungateiclostridiaceae","Izemoplasmataceae",
+                                         "Izemoplasmatales","Lachnospiraceae",
+                                         "Oscillospiraceae","Peptostreptococcaceae",
+                                         "Prevotellaceae","RF39","Rikenellaceae",
+                                         "Ruminococcaceae","Sphingobacteriaceae",
+                                         "Spirochaetaceae","UCG-010","WCHB1-41",
+                                         "[Eubacterium]_coprostanoligenes_group",
+                                         "p-251-o5"))) %>%
+  mutate(reserve =factor(reserve, levels = c("EFNP","RUNR",
+                                             "Brookfield conservation park",
+                                             "Kooloola station",
+                                             "Wonga station"))) %>%
+ggplot(aes(x=mean_rel_abund, y=taxon, colour = reserve)) +
+  geom_hline(yintercept = 1:22,
+             linewidth = 0.25,
+             color = "black") +
+  geom_point(size = 4) +
+  labs(x = "Mean relative abundance",
+       y = "Bacterial family") +
+  scale_color_manual(values = c("#a6611a","#dfc27d","#636363","#80cdc1","#018571"),
+                     name = "Reserve") +
+  theme(axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        axis.title.y = element_blank())
+  
+
+f_tax_sea <- taxon_fam_joined_sea %>%
+  filter(!is.na(season)) %>%
+  mutate(taxon = factor(taxon, levels = c("unclassified","Other","Anaerovoracaceae",
+                                          "Christensenellaceae","Clostridia_UCG-014",
+                                          "Clostridiaceae","Erysipelatoclostridiaceae",
+                                          "Hungateiclostridiaceae","Izemoplasmataceae",
+                                          "Lachnospiraceae","MVP-15","Oscillospiraceae",
+                                          "Peptostreptococcaceae","Prevotellaceae",
+                                          "RF39","Rikenellaceae","Ruminococcaceae",
+                                          "Spirochaetaceae","UCG-010",
+                                          "WCHB1-41",
+                                          "[Eubacterium]_coprostanoligenes_group",
+                                          "p-251-o5"
+                                          ))) %>%
+  ggplot(aes(x=mean_rel_abund, y=taxon, colour = season)) +
+  geom_hline(yintercept = 1:22,
+             linewidth = 0.25,
+             color = "black") +
+  geom_point(size = 4) +
+  labs(x = "Mean relative abundance",
+       y = "Bacterial family") +
+  scale_color_manual(values = c("#b2182b","#ef8a62","#2166ac"),
+                     name = "Season",
+                     labels = c("Spring EFNP", "Winter EFNP", "Winter RUNR")) +
+  theme(axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        panel.background = element_blank())
+
+
+f_tax_sea + f_tax_spp + f_tax_res +
+  plot_layout(guides = 'collect', ncol = 1) +
+  plot_annotation(tag_levels = "A")
+```
+
+Figure 5 will be proportion of shared features between species and season
+
+
+Figure 6 - will be ANCOM-BC which compares the enrichment or depletion of bacterial taxa between groups. One for species, one for season and one for reserve. Can show in Qiime2 still working on how to plot it well in R.
+
+Figure 1 - sample map
+
+Table - 1 sample info table. 
